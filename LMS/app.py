@@ -53,7 +53,7 @@ def login() :
                 # 처리 후 이동하는 경로 (http://localhost:/index)
 
             else : # 찾은 계정이 없다면?
-                return "<script>alert('아이디나 비번이 틀렸습니다.');history.back();</script>"
+                return "<script>alert('아이디 혹은 비번이 틀렸습니다.');history.back();</script>"
             #                   경고창                               뒤로가기
 
     finally :
@@ -83,7 +83,7 @@ def join() : # http://localhost:5000/ GET 매서드(화면 출력) post(화면 �
     try : # 예외 발생 가능성
         with conn.cursor() as cursor :
             # 아이디 중복 확인
-            cursor.execute("SELECT id FROM members WHERE id = %s", (uid,))
+            cursor.execute("SELECT id FROM members WHERE Uid = %s", (uid,))
 
             if cursor.fetchone() :
                 return "<script>alert('이미 존재하는 아이디입니다.'); history.back();</script>"
@@ -116,7 +116,7 @@ def member_edit() :
 
             if request.method == 'GET' :
                 # 기존 정보 불러오기
-                cursor.execute("SELECT * FROM members WHERE uid = %s", (session['user_id'],))
+                cursor.execute("SELECT * FROM members WHERE id = %s", (session['user_id'],))
                 user_info = cursor.fetchone()
                 return render_template('member_edit.html', user = user_info)
                 #                       가장 중요한 포인트 / GET 요청 시 페이지  / 객체 전달용 코드
@@ -134,7 +134,7 @@ def member_edit() :
                 cursor.execute(sql, (new_name, session['user_id']))
 
             conn.commit()
-            session['user_id'] = new_name # session 이름 정보도 업데이트
+            session['user_name'] = new_name # session 이름 정보도 업데이트
             return "<script>alert('정보가 수정되었습니다.');location.href='/mypage';</script>"
 
     except Exception as e : # 예외 발생 시 실행문
@@ -158,7 +158,7 @@ def mypage() :
             user_info = cursor.fetchone()
 
             # 2. 내가 쓴 게시물 갯수 조회 (작성한 boards 테이블 활용)
-            cursor.execute("SELECT COUNT(*) as board_count FROM boards WHERE id = %s", (session['user_id'],))
+            cursor.execute("SELECT COUNT(*) as board_count FROM boards WHERE member_id = %s", (session['user_id'],))
             board_count = cursor.fetchone()['board_count']
             #                    개수를 세서 'fetchone()'에 넣는다. => 'board_count' 이름으로 개수를 가지고 있다.
 
