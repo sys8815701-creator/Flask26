@@ -5,8 +5,11 @@
 # static, templates 폴더 필수 (프론트용 파일 모이는 곳)
 # static : 정적 파일을 모아 놓은 폴더 (e.g. html, css, js)
 # templates : 동적 파일을 모아 놓은 폴더 (e.g. CRUD 화면, 레이아웃, index)
-from flask import Flask, render_template, request, redirect, url_for, session
-#                플라스크   프론트 연결     요청, 응답 / 주소 전달 / 주소 생성 / 상태 저장소
+from flask import Flask, render_template, request, redirect, url_for, session, flash
+#                플라스크   프론트 연결    요청, 응답 / 주소 전달 / 주소 생성 / 상태 저장소
+from werkzeug.utils import secure_filename
+
+import os
 from LMS.common import Session
 from LMS.domain import  Board
 
@@ -104,7 +107,7 @@ def join() : # http://localhost:5000/ GET 매서드(화면 출력) post(화면 �
 
     except Exception as e : # 예외 발생 시 실행문
         print(f"회원가입 에러: {e}")
-        return "가입 중 오류가 발생했습니다. /n join 매서드를 확인하세요."
+        return "회원가입 도중 오류가 발생했습니다. /n join 매서드를 확인하세요."
 
     finally : # 항상 실행문
         conn.close()
@@ -178,6 +181,41 @@ def mypage() :
     finally :
         conn.close()
 
+# 마이페이지 - 작성한 게시물 조회
+@app.route('/board/my')  # http://localhost:5000/board/my
+def my_board_list() :
+    if 'user_id' not in session :
+        return redirect(url_for('login'))
+
+    conn = Session.get_connection()
+
+    try :
+        with conn.cursor() as cursor :
+
+            # 내가 쓴 글만 조회 (작성자 이름 포함)
+            sql = """
+                  SELECT b.*, m.name as writer_name
+                  FROM boards b
+                  JOIN members m ON b.member_id = m.id
+                  WHERE b.member_id = %s
+                  ORDER BY b.id DESC
+                  """
+            cursor.execute(sql, (session['user_id'],))
+            rows = cursor.fetchall()
+
+            # 기존 Board 도메인 객체 활용
+            boards = [Board.from_db(row) for row in rows]
+
+            # 기존 board_list.html을 재사용하거나 전용 페이지를 만듭니다.
+            # 여기서는 '내 글 관리'라는 느낌을 주도록 새로운 제목과 함께 보냅니다.
+            return render_template('board_list.html', boards=boards, list_title="내가 작성한 게시물")
+
+    finally :
+        conn.close()
+
+# 마이페이지 - 프로필 이미지 업로드
+
+
 # ----------------------------------------------------------------------------------------------------------------------
 #                                                 게시판 CRUD
 # ----------------------------------------------------------------------------------------------------------------------
@@ -212,8 +250,8 @@ def board_write() :
             return redirect(url_for('board_list')) # 저장 후 게시물 목록으로 이동한다.
 
         except Exception as e :
-            print(f"글쓰기 에러 : {e}")
-            return "게시물을 저장하는 도중 에러가 발생하였습니다."
+            print(f"게시물 작성 에러 : {e}")
+            return "작성된 게시물을 저장하는 도중 에러가 발생하였습니다."
 
         finally :
             conn.close()
@@ -336,11 +374,83 @@ def board_delete(board_id) :
         return redirect(url_for('board_list'))
 
     except Exception as e :
-        print(f"삭제 에러 : {e}")
-        return "삭제 도중 오류가 발생하였습니다."
+        print(f"게시물 삭제 에러 : {e}")
+        return "게시물 삭제 도중 오류가 발생하였습니다."
 
     finally :
         conn.close()
+
+# ----------------------------------------------------------------------------------------------------------------------
+#                                              자료실 (파일 업로드)
+# ----------------------------------------------------------------------------------------------------------------------
+
+# 파일 저장 경로 설정 (static 폴더 안)
+BASE_DIR = os.path.abspath(os.path.dirname(__file__))
+UPLOAD_FOLDER = os.path.join(BASE_DIR, 'static', 'uploads')
+
+# 폴더가 없으면 자동 생성 (OS 오류 방지)
+if not os.path.exists(UPLOAD_FOLDER) :
+    os.makedirs(UPLOAD_FOLDER, exist_ok = True)
+
+app.config['UPLOAD_FOLDER'] = UPLOAD_FOLDER
+
+# 자료실 메인 화면 (서브 메뉴 전용 경로)
+@app.route('/library')
+def library_list() :
+    if 'user_id' not in session :
+        return "<script>alert('로그인 후 이용 가능합니다.');location.href='/login';</script>"
+
+    # 폴더 내 파일 목록 읽기
+    try :
+        files = os.listdir(app.config['UPLOAD_FOLDER'])
+
+    except Exception as e :
+        print(f"파일 읽기 오류: {e}")
+
+        files = []
+
+    return render_template('library.html', files=files)
+
+# 파일 업로드 처리
+@app.route('/library/upload', methods=['POST'])
+def library_upload() :
+    if 'file' not in request.files :
+        return "<script>alert('파일이 존재하지 않습니다.');history.back();</script>"
+
+    file = request.files['file']
+    if file.filename == '' :
+        return "<script>alert('선택된 파일이 없습니다.');history.back();</script>"
+
+    if file :
+
+        # 안전한 파일명으로 변경 후 저장
+        filename = secure_filename(file.filename)
+        file.save(os.path.join(app.config['UPLOAD_FOLDER'], filename))
+
+        return f"<script>alert('{filename} 업로드가 완료되었습니다.');location.href='/library';</script>"
+
+# 파일 삭제 처리
+@app.route('/library/delete/<filename>', methods=['POST'])
+def library_delete(filename) :
+    if 'user_id' not in session :
+        return "<script>alert('권한이 없습니다.');history.back();</script>"
+
+    # 보안을 위해 파일명 정제 (중요!)
+    filename = secure_filename(filename)
+    file_path = os.path.join(app.config['UPLOAD_FOLDER'], filename)
+
+    try :
+
+        if os.path.exists(file_path) :
+            os.remove(file_path)  # 실제 파일 삭제
+            return f"<script>alert('{filename} 삭제가 완료되었습니다.');location.href='/library';</script>"
+
+        else :
+            return "<script>alert('파일을 찾을 수 없습니다.');history.back();</script>"
+
+    except Exception as e :
+        print(f"파일 삭제 에러: {e}")
+        return "<script>alert('파일 삭제 도중 오류가 발생했습니다.');history.back();</script>"
 
 # ----------------------------------------------------------------------------------------------------------------------
 #                                                플라스크 실행

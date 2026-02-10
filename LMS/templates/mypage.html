@@ -22,9 +22,9 @@
                             <strong>아이디:</strong> <span>{{ user.uid }}</span>
                         </div>
                         <div class="mb-3">
-                            <strong>가입일:</strong> <span>{{ user.created_at.strftime('%Y-%m-%d') if user.created_at else "날짜 없음" }}</span>
+                            <strong>가입일:</strong> <span>{{ user.created_at.strftime('%Y-%m-%d') if user.created_at else "날짜없음" }}</span>
                         </div>
-                        
+
                         <h5 class="text-muted border-bottom pb-2 mt-4">활동 요약</h5>
                         <div class="row mt-3">
                             <div class="col-6">
@@ -32,6 +32,17 @@
                                     <div class="card-body text-center">
                                         <small class="text-muted d-block">작성 게시글</small>
                                         <a href="/board/my" class="h4 fw-bold text-decoration-none">{{ board_count }}건</a>
+                                        <div class="card">
+                                            <div class="card-body">
+                                                <h5 class="card-title">활동 통계</h5>
+                                                <p class="card-text">
+                                                    작성한 게시글:
+                                                    <a href="{{ url_for('my_board_list') }}" class="badge bg-primary text-decoration-none">
+                                                        {{ board_count }} 개 (클릭하여 확인)
+                                                    </a>
+                                                </p>
+                                            </div>
+                                        </div>
                                     </div>
                                 </div>
                             </div>
