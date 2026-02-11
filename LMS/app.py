@@ -5,13 +5,15 @@
 # static, templates 폴더 필수 (프론트용 파일 모이는 곳)
 # static : 정적 파일을 모아 놓은 폴더 (e.g. html, css, js)
 # templates : 동적 파일을 모아 놓은 폴더 (e.g. CRUD 화면, 레이아웃, index)
+import time
+
 from flask import Flask, render_template, request, redirect, url_for, session, flash
 #                플라스크   프론트 연결    요청, 응답 / 주소 전달 / 주소 생성 / 상태 저장소
 from werkzeug.utils import secure_filename
 
 import os
 from LMS.common import Session
-from LMS.domain import  Board
+from LMS.domain import Board, Score
 
 app = Flask(__name__)
 app.secret_key = 'your_secret_key_here'
@@ -181,6 +183,32 @@ def mypage() :
     finally :
         conn.close()
 
+# 마이페이지 - 성적 확인
+@app.route('/score/my')
+def score_my() :
+
+    if 'user_id' not in session :
+        return redirect(url_for('login'))
+
+    conn = Session.get_connection()
+
+    try :
+        with conn.cursor() as cursor :
+
+            # 내 id로만 조회
+            sql = "SELECT * FROM scores WHERE member_id = %s"
+            cursor.execute(sql, (session['user_id'],))
+            row = cursor.fetchone()
+            print(row) # dict 타입으로 결과물이 출력된다.
+
+            # Score 객체로 변환 (from_db 활용)
+            score = Score.from_db(row) if row else None
+
+            return render_template('score_my.html', score = score)
+
+    finally :
+        conn.close()
+
 # 마이페이지 - 작성한 게시물 조회
 @app.route('/board/my')  # http://localhost:5000/board/my
 def my_board_list() :
@@ -212,9 +240,6 @@ def my_board_list() :
 
     finally :
         conn.close()
-
-# 마이페이지 - 프로필 이미지 업로드
-
 
 # ----------------------------------------------------------------------------------------------------------------------
 #                                                 게시판 CRUD
@@ -381,6 +406,189 @@ def board_delete(board_id) :
         conn.close()
 
 # ----------------------------------------------------------------------------------------------------------------------
+#                                                 성적 CRUD
+# ----------------------------------------------------------------------------------------------------------------------
+
+# 주의사항 : 'ADMIN'과 'MANAGER'에게만 CUD를 제공한다.
+# 일반 사용자의 ROLE은 USER이고, 본인의 성적만 조회할 수 있다.
+
+# 성적 입력
+@app.route('/score/add') # http://localhost:5000/score/add?uid=test1&name=test1
+def score_add() :
+    if session.get('user_role') not in ('admin', 'manager') :
+        return "<script>alert('권한이 없습니다.');history.back();</script>"
+
+    target_uid = request.args.get('uid') # args : url(주소)를 통해 전달되는 값 => 주소 뒤에 '?k=v&k=v' 형식
+    target_name = request.args.get('name')
+
+    conn = Session.get_connection()
+
+    try :
+        with conn.cursor() as cursor :
+
+            # 1. 대상 학생의 id 조회
+            cursor.execute("SELECT id FROM members WHERE uid = %s", (target_uid,))
+            student = cursor.fetchone()
+
+            # 2. 기존 성적이 존재하는지 조회
+            existing_score = None
+
+            if student :
+                cursor.execute("SELECT * FROM scores WHERE member_id = %s", (student['id'],))
+                row = cursor.fetchone()
+
+                if row :
+
+                    # 기존에 만들었던 'Score.from_db' 활용
+                    existing_score = Score.from_db(row)
+                    # 위쪽에 객체 로드 처리 => from LMS.domain import Board, Score
+
+            return render_template('score_form.html', # render_template : html에 전달
+                                   target_uid = target_uid,
+                                   target_name = target_name,
+                                   score = existing_score) # score 객체 전달
+
+    finally :
+        conn.close()
+
+# 성적 저장
+@app.route('/score/save', methods = ['POST'])
+def score_save() :
+
+    if session.get('user_role') not in ('admin', 'manager') :
+        return "권한 오류", 403 # 오류 페이지로 교체
+
+    # 폼 데이터 수집
+    target_uid = request.form.get('target_uid')
+    kor = int(request.form.get('korean', 0))
+    eng = int(request.form.get('english', 0))
+    math = int(request.form.get('math', 0))
+
+    conn = Session.get_connection()
+
+    try :
+        with conn.cursor() as cursor :
+
+            # 1. 대상 학생의 id(PK) 조회 => 학생의 번호를 가져온다.
+            cursor.execute("SELECT id FROM members WHERE uid = %s", (target_uid,))
+            student = cursor.fetchone()
+            print(student) # 학번 출력
+
+            # 존재하지 않는 경우
+            if not student :
+                return "<script>alert('존재하지 않는 학생입니다.');history.back();</script>"
+
+            # 2. Score 객체 생성 (계산 프로퍼티 활용)
+            temp_score = Score(member_id = student['id'], kor = kor, eng = eng, math = math)
+            #            '__init__'을 활용하여 객체 생성
+
+            # 3. 학번(student)을 활용하여 기존 데이터가 존재하는지 확인
+            cursor.execute("SELECT id FROM scores WHERE member_id = %s", (student['id'],))
+            is_exist = cursor.fetchone() # 성적이 존재하면 id, 없으면 None
+
+            if is_exist :
+
+                # UPDATE 실행
+                sql = """
+                      UPDATE scores SET korean = %s, english = %s, math = %s,
+                                        total = %s, average = %s, grade =  %s
+                      WHERE member_id = %s
+                      """
+
+                cursor.execute(sql,(temp_score.kor, temp_score.eng, temp_score.math,
+                                    temp_score.total, temp_score.avg, temp_score.grade,
+                                    student['id']))
+
+            else :
+
+                # INSERT 실행
+                sql = """
+                      INSERT INTO scores (member_id, korean, english, math, total, average, grade)
+                      VALUES (%s, %s, %s, %s, %s, %s, %s)
+                      """
+
+                cursor.execute(sql, (student['id'], temp_score.kor, temp_score.eng, temp_score.math,
+                                     temp_score.total, temp_score.avg, temp_score.grade))
+
+            conn.commit()
+            return f"<script>alert('{target_uid} 학생의 성적 입력이 완료되었습니다.');location.href='/score/list';</script>"
+
+    finally :
+        conn.close()
+
+# 성적 조회
+@app.route('/score/list') # http://localhost:5000/score/list
+def score_list() :
+
+    # 1. 권한 체크 (관리자나 매니저만 볼 수 있게 설정)
+    if session.get('user_role') not in ('admin', 'manager') :
+        return "<script>alert('권한이 없습니다.');history.back();</script>"
+
+    conn = Session.get_connection()
+
+    try :
+        with conn.cursor() as cursor :
+
+            # 2. JOIN을 사용하여 학생 이름(name)과 성적 데이터를 함께 조회
+            # 성적이 없는 학생은 제외하고, 성적이 있는 학생들만 총점 순으로 정렬
+
+            sql = """
+                  SELECT m.name, m.uid, s.* FROM scores s
+                  JOIN members m ON s.member_id = m.id
+                  ORDER BY s.total DESC
+                  """
+
+            cursor.execute(sql)
+            datas = cursor.fetchall()
+            print(f"sql 결과 테스트 : {datas}")
+
+            # 3. DB에서 가져온 딕셔너리 리스트를 Score 객체 리스트로 변환
+            score_objects = []
+            for data in datas :
+
+                # Score 클래스에 정의한 'from_db' 활용
+                s = Score.from_db(data) # 직렬화 (dict 타입 => 객체)
+                # 문자열은 주소가 없기 때문에, 주소인 객체로 만들어 줘야 한다.
+                # 객체에 없는 이름(name) 정보는 수동으로 넣기 (JOIN에서 만든 값 활용)
+                s.name = data['name']
+                s.uid = data['uid']
+                score_objects.append(s) # 객체(주소)를 리스트에 넣는다.
+
+            return render_template('score_list.html', scores = score_objects)
+            #                        프론트 화면 ui에                  성적이 담긴 리스트 객체를 전달한다.
+
+    finally :
+        conn.close()
+
+# 성적 입력 (member 테이블 기반)
+@app.route('/score/members')
+def score_members() :
+
+    if session.get('user_role') not in ('admin', 'manager') :
+        return "<script>alert('권한이 없습니다.');history.back();</script>"
+
+    conn = Session.get_connection()
+
+    try :
+        with conn.cursor() as cursor :
+
+            # LEFT JOIN을 통해 성적이 있으면 's.id'를 숫자, 없으면 NULL 처리한다.
+            sql = """
+                  SELECT m.id, m.uid, m.name, s.id AS score_id
+                  FROM members m
+                  LEFT JOIN scores s ON m.id = s.member_id
+                  WHERE m.role = 'user'
+                  ORDER BY m.name ASC
+                  """
+
+            cursor.execute(sql)
+            members = cursor.fetchall()
+            return render_template('score_member_list.html', members = members)
+
+    finally :
+        conn.close()
+
+# ----------------------------------------------------------------------------------------------------------------------
 #                                              자료실 (파일 업로드)
 # ----------------------------------------------------------------------------------------------------------------------
 
@@ -396,40 +604,60 @@ app.config['UPLOAD_FOLDER'] = UPLOAD_FOLDER
 
 # 자료실 메인 화면 (서브 메뉴 전용 경로)
 @app.route('/library')
-def library_list() :
-    if 'user_id' not in session :
-        return "<script>alert('로그인 후 이용 가능합니다.');location.href='/login';</script>"
+def library_list():
+    if 'user_id' not in session:
+        return redirect(url_for('login'))
 
-    # 폴더 내 파일 목록 읽기
-    try :
-        files = os.listdir(app.config['UPLOAD_FOLDER'])
+    conn = Session.get_connection()
+    try:
+        with conn.cursor() as cursor:
+            # JOIN을 써서 올린 사람 이름까지 가져오면 더 좋습니다.
+            sql = """
+                SELECT l.*, m.name as user_name 
+                FROM library l 
+                JOIN members m ON l.member_id = m.id 
+                ORDER BY l.id DESC
+            """
+            cursor.execute(sql)
+            files = cursor.fetchall()  # 이제 폴더가 아닌 DB 리스트를 가져온다.
+        return render_template('library.html', files=files)
+    finally:
+        conn.close()
 
-    except Exception as e :
-        print(f"파일 읽기 오류: {e}")
-
-        files = []
-
-    return render_template('library.html', files=files)
-
-# 파일 업로드 처리
+# 파일 업로드
 @app.route('/library/upload', methods=['POST'])
-def library_upload() :
-    if 'file' not in request.files :
-        return "<script>alert('파일이 존재하지 않습니다.');history.back();</script>"
+def library_upload():
+    if 'user_id' not in session:
+        return redirect(url_for('login'))
+
+    if 'file' not in request.files:
+        return "<script>alert('파일이 없습니다.');history.back();</script>"
 
     file = request.files['file']
-    if file.filename == '' :
+    if file.filename == '':
         return "<script>alert('선택된 파일이 없습니다.');history.back();</script>"
 
-    if file :
-
-        # 안전한 파일명으로 변경 후 저장
-        filename = secure_filename(file.filename)
+    if file:
+        original_name = file.filename
+        # 파일명 중복 방지를 위한 보안 처리된 파일명 생성
+        filename = secure_filename(f"{session['user_id']}_{int(time.time())}_{original_name}")
         file.save(os.path.join(app.config['UPLOAD_FOLDER'], filename))
 
-        return f"<script>alert('{filename} 업로드가 완료되었습니다.');location.href='/library';</script>"
+        # --- DB 저장 영역 ---
+        conn = Session.get_connection()
+        try:
+            with conn.cursor() as cursor:
+                sql = "INSERT INTO library (member_id, filename, original_name) VALUES (%s, %s, %s)"
+                cursor.execute(sql, (session['user_id'], filename, original_name))
+                conn.commit()
+            return f"<script>alert('자료실 업로드 및 DB 저장 완료!');location.href='/library';</script>"
+        except Exception as e:
+            print(f"DB 저장 에러: {e}")
+            return "<script>alert('DB 저장 중 오류 발생');history.back();</script>"
+        finally:
+            conn.close()
 
-# 파일 삭제 처리
+# 파일 삭제
 @app.route('/library/delete/<filename>', methods=['POST'])
 def library_delete(filename) :
     if 'user_id' not in session :
