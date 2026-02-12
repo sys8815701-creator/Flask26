@@ -5,15 +5,14 @@
 # static, templates 폴더 필수 (프론트용 파일 모이는 곳)
 # static : 정적 파일을 모아 놓은 폴더 (e.g. html, css, js)
 # templates : 동적 파일을 모아 놓은 폴더 (e.g. CRUD 화면, 레이아웃, index)
-import time
 
-from flask import Flask, render_template, request, redirect, url_for, session, flash
+from flask import Flask, render_template, request, redirect, url_for, session, send_from_directory
 #                플라스크   프론트 연결    요청, 응답 / 주소 전달 / 주소 생성 / 상태 저장소
-from werkzeug.utils import secure_filename
 
 import os
 from LMS.common import Session
 from LMS.domain import Board, Score
+from LMS.service import PostService
 
 app = Flask(__name__)
 app.secret_key = 'your_secret_key_here'
@@ -592,93 +591,82 @@ def score_members() :
 #                                              자료실 (파일 업로드)
 # ----------------------------------------------------------------------------------------------------------------------
 
-# 파일 저장 경로 설정 (static 폴더 안)
-BASE_DIR = os.path.abspath(os.path.dirname(__file__))
-UPLOAD_FOLDER = os.path.join(BASE_DIR, 'static', 'uploads')
+# 1. 파일 업로드 / 다운로드
+# 2. 단일 파일 / 다중 파일 업로드 처리
+# 3. 서비스 패키지 활용
+## 4. '/upload' 폴더 사용 (용량 제한 : 16MB)
+# 5. 파일명 중복 방지용 코드 활용
+# 6. DB에서 부모 객체가 삭제되면 자식 객체도 삭제 처리 (CASCADE)
 
-# 폴더가 없으면 자동 생성 (OS 오류 방지)
-if not os.path.exists(UPLOAD_FOLDER) :
-    os.makedirs(UPLOAD_FOLDER, exist_ok = True)
+# 파일 처리 경로
+UPLOAD_FOLDER = 'uploads/'
+# 폴더 부재 시 자동 생성
+if not os.path.exists(UPLOAD_FOLDER) : # 'import os' 상단에 추가
+    os.makedirs(UPLOAD_FOLDER) # os.makedirs(경로) : 폴더 생성용 코드
 
 app.config['UPLOAD_FOLDER'] = UPLOAD_FOLDER
+# 최대 용량 제한 (e.g. 16MB)
+app.config['MAX_CONTENT_LENGTH'] = 16 * 1024 * 1024
+# bit : 0, 1
+# 1 byte == 8 bit => 0 ~ 255 (총 256개)
+# 1 KB == 1024 byte
+# 1 MB == 1024 Kbyte
+# 1 GB == 1024 Mbyte
+# 1 TB == 1024 Gbyte
+# 1 PB == 1024 Tbyte
+# 1 XB == 1024 Pbyte
 
-# 자료실 메인 화면 (서브 메뉴 전용 경로)
-@app.route('/library')
-def library_list():
-    if 'user_id' not in session:
-        return redirect(url_for('login'))
-
-    conn = Session.get_connection()
-    try:
-        with conn.cursor() as cursor:
-            # JOIN을 써서 올린 사람 이름까지 가져오면 더 좋습니다.
-            sql = """
-                SELECT l.*, m.name as user_name 
-                FROM library l 
-                JOIN members m ON l.member_id = m.id 
-                ORDER BY l.id DESC
-            """
-            cursor.execute(sql)
-            files = cursor.fetchall()  # 이제 폴더가 아닌 DB 리스트를 가져온다.
-        return render_template('library.html', files=files)
-    finally:
-        conn.close()
-
-# 파일 업로드
-@app.route('/library/upload', methods=['POST'])
-def library_upload():
-    if 'user_id' not in session:
-        return redirect(url_for('login'))
-
-    if 'file' not in request.files:
-        return "<script>alert('파일이 없습니다.');history.back();</script>"
-
-    file = request.files['file']
-    if file.filename == '':
-        return "<script>alert('선택된 파일이 없습니다.');history.back();</script>"
-
-    if file:
-        original_name = file.filename
-        # 파일명 중복 방지를 위한 보안 처리된 파일명 생성
-        filename = secure_filename(f"{session['user_id']}_{int(time.time())}_{original_name}")
-        file.save(os.path.join(app.config['UPLOAD_FOLDER'], filename))
-
-        # --- DB 저장 영역 ---
-        conn = Session.get_connection()
-        try:
-            with conn.cursor() as cursor:
-                sql = "INSERT INTO library (member_id, filename, original_name) VALUES (%s, %s, %s)"
-                cursor.execute(sql, (session['user_id'], filename, original_name))
-                conn.commit()
-            return f"<script>alert('자료실 업로드 및 DB 저장 완료!');location.href='/library';</script>"
-        except Exception as e:
-            print(f"DB 저장 에러: {e}")
-            return "<script>alert('DB 저장 중 오류 발생');history.back();</script>"
-        finally:
-            conn.close()
-
-# 파일 삭제
-@app.route('/library/delete/<filename>', methods=['POST'])
-def library_delete(filename) :
+# 파일 게시판 - 작성
+@app.route('/filesboard/write', methods = ['GET', 'POST'])
+def filesboard_write() :
     if 'user_id' not in session :
-        return "<script>alert('권한이 없습니다.');history.back();</script>"
+        return redirect(url_for('login'))
 
-    # 보안을 위해 파일명 정제 (중요!)
-    filename = secure_filename(filename)
-    file_path = os.path.join(app.config['UPLOAD_FOLDER'], filename)
+    if request.method == 'POST' :
 
-    try :
+        title = request.form.get('title')
+        content = request.form.get('content')
+        files = request.files.getlist('files') # getlist : 리스트 형태로 가져온다.
 
-        if os.path.exists(file_path) :
-            os.remove(file_path)  # 실제 파일 삭제
-            return f"<script>alert('{filename} 삭제가 완료되었습니다.');location.href='/library';</script>"
+        if PostService.save_post(session['user_id'], title, content, files) :
+            return "<script>alert('게시물이 등록되었습니다.');location.href='/filesboard';</script>"
 
         else :
-            return "<script>alert('파일을 찾을 수 없습니다.');history.back();</script>"
+            return "<script>alert('등록 실패');history.back();</script>"
 
-    except Exception as e :
-        print(f"파일 삭제 에러: {e}")
-        return "<script>alert('파일 삭제 도중 오류가 발생했습니다.');history.back();</script>"
+    return render_template('filesboard_write.html')
+
+# 파일 게시판 - 목록
+@app.route('/filesboard')
+def filesboard_list() :
+    posts = PostService.get_posts()
+    return render_template('filesboard_list.html', posts=posts)
+
+# 파일 게시판 - 자세히 보기
+@app.route('/filesboard/view/<int:post_id>')
+def filesboard_view(post_id) :
+    post, files = PostService.get_post_detail(post_id)
+
+    if not post :
+        return "<script>alert('해당 게시글이 없습니다.'); location.href='/filesboard';</script>"
+
+    return render_template('filesboard_view.html', post=post, files=files)
+
+# 파일 게시판 - 자료 다운로드
+@app.route('/download/<path:filename>')
+def download_file(filename) :
+    # 파일이 저장된 폴더(uploads)에서 파일을 찾아 전송한다.
+    # 프론트 '<a href="{{ url_for('download_file', filename=file.save_name) }}" ...>' 처리용
+    # filename : 서버에 저장된 save_name
+    # 브라우저가 다운로드할 때 보여줄 원본 이름을 쿼리 스트링으로 받거나 DB에서 가져와야 한다.
+
+    origin_name = request.args.get('origin_name')
+    return send_from_directory('uploads/', filename, as_attachment = True, download_name = origin_name)
+    # from flask import send_from_directory 필수
+
+    #   return send_from_directory('uploads/', filename) : 브라우저에서 바로 열어버린다.
+    #   as_attachment=True : 파일 다운로드 창
+    #   저장할 파일명 : download_name=origin_name
 
 # ----------------------------------------------------------------------------------------------------------------------
 #                                                플라스크 실행
