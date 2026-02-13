@@ -108,3 +108,96 @@ class PostService :
 
         finally :
             conn.close()
+
+    # 파일 게시물 - 삭제
+    @staticmethod
+    def delete_post(post_id, upload_folder='uploads/') :
+
+        """게시글 및 관련 실제 파일 삭제"""
+        conn = Session.get_connection()
+
+        try :
+            with conn.cursor() as cursor :
+
+                # 1. 파일 삭제를 위해 삭제 전 첨부 파일 정보 조회
+                cursor.execute("SELECT save_name FROM attachments WHERE post_id = %s", (post_id,))
+                files = cursor.fetchall()
+
+                # 2. 서버에서 실제 파일 삭제
+                for f in files :
+                    file_path = os.path.join(upload_folder, f['save_name'])
+
+                    if os.path.exists(file_path) :
+                        os.remove(file_path) # 실제 하드에서 삭제를 진행한다.
+
+                # 3. 게시글 삭제 => DB 외래키 'ON DELETE CASCADE' 설정 덕분에 'attachments' 테이블도 자동 삭제된다.
+                # 삭제 시 'CASCADE' 옵션을 입력하지 않으면, 자식 테이블 데이터를 먼저 삭제한 후 부모 테이블의 데이터를 삭제한다.
+                sql = "DELETE FROM posts WHERE id = %s"
+                cursor.execute(sql, (post_id,))
+
+                conn.commit()
+                return True
+
+        except Exception as e :
+            print(f"Delete Error: {e}")
+            conn.rollback()
+            return False
+
+        finally :
+            conn.close()
+
+    # 파일 게시물 - 수정
+    @staticmethod  # 다중 파일 수정 처리
+    def update_post(post_id, title, content, files=None, upload_folder='uploads/') :
+
+        """게시글 수정 및 다중 파일 교체"""
+        conn = Session.get_connection()
+
+        try :
+            with conn.cursor() as cursor :
+
+                # 1. 기본 정보 수정
+                cursor.execute("UPDATE posts SET title=%s, content=%s WHERE id=%s", (title, content, post_id))
+
+                # 2. 새 파일들이 들어왔을 경우에만 기존 파일 삭제 및 교체 => 아무 파일도 선택 안 하면 기존 파일 유지
+                if files and any(f.filename != '' for f in files) :
+
+                    # A. 기존 물리적 파일 삭제를 위해 save_name 조회
+                    cursor.execute("SELECT save_name FROM attachments WHERE post_id = %s", (post_id,))
+                    old_files = cursor.fetchall()
+
+                    for old in old_files :
+                        old_path = os.path.join(upload_folder, old['save_name'])
+
+                        if os.path.exists(old_path) :
+                            os.remove(old_path)
+
+                    # B. DB에서 기존 첨부파일 기록 삭제
+                    cursor.execute("DELETE FROM attachments WHERE post_id = %s", (post_id,))
+
+                    # C. 새로운 파일들 저장
+                    for file in files :
+
+                        if file and file.filename != '' :
+
+                            origin_name = file.filename
+                            ext = origin_name.rsplit('.', 1)[1].lower()
+                            save_name = f"{uuid.uuid4().hex}.{ext}"
+                            file_path = os.path.join(upload_folder, save_name)
+                            file.save(file_path)
+
+                            cursor.execute("""
+                                    INSERT INTO attachments (post_id, origin_name, save_name, file_path)
+                                    VALUES (%s, %s, %s, %s)
+                                """, (post_id, origin_name, save_name, file_path))
+
+                conn.commit()
+                return True
+
+        except Exception as e :
+            print(f"Update Error: {e}")
+            conn.rollback()
+            return False
+
+        finally :
+            conn.close()

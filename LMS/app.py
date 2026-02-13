@@ -627,6 +627,7 @@ def filesboard_write() :
         title = request.form.get('title')
         content = request.form.get('content')
         files = request.files.getlist('files') # getlist : 리스트 형태로 가져온다.
+                                               # 파일 처리 시 html의 필수 코드 : enctype = multipart/form-data"
 
         if PostService.save_post(session['user_id'], title, content, files) :
             return "<script>alert('게시물이 등록되었습니다.');location.href='/filesboard';</script>"
@@ -667,6 +668,57 @@ def download_file(filename) :
     #   return send_from_directory('uploads/', filename) : 브라우저에서 바로 열어버린다.
     #   as_attachment=True : 파일 다운로드 창
     #   저장할 파일명 : download_name=origin_name
+
+# 파일 게시판 - 삭제
+@app.route('/filesboard/delete/<int:post_id>')
+def filesboard_delete(post_id) :
+
+    if 'user_id' not in session :
+        return redirect(url_for('login'))
+
+    # 삭제 전 작성자 확인을 위해 정보 조회
+    post, _ = PostService.get_post_detail(post_id)
+    # _ : 리턴 값을 사용하지 않겠다 라는 관례적인 표현
+    # (_) : 사용하지 않는 변수
+
+    if not post :
+        return "<script>alert('이미 삭제된 게시글입니다.'); location.href='/filesboard';</script>"
+
+    # 본인 확인 (또는 관리자 권한)
+    if post['member_id'] != session['user_id'] and session.get('user_role') != 'admin' :
+        return "<script>alert('삭제 권한이 없습니다.'); history.back();</script>"
+
+    if PostService.delete_post(post_id) :
+        return "<script>alert('성공적으로 삭제되었습니다.'); location.href='/filesboard';</script>"
+
+    else :
+        return "<script>alert('삭제 중 오류가 발생했습니다.'); history.back();</script>"
+
+
+# 파일 게시판 - 수정
+@app.route('/filesboard/edit/<int:post_id>', methods=['GET', 'POST'])
+def filesboard_edit(post_id) :
+
+    if 'user_id' not in session :
+        return redirect(url_for('login'))
+
+    if request.method == 'POST' :
+
+        title = request.form.get('title')
+        content = request.form.get('content')
+        files = request.files.getlist('files')  # 다중 파일 가져오기
+
+        if PostService.update_post(post_id, title, content, files) :
+            return f"<script>alert('수정되었습니다.'); location.href='/filesboard/view/{post_id}';</script>"
+
+        return "<script>alert('수정 실패'); history.back();</script>"
+
+    # GET 요청 시 기존 데이터 로드
+    post, files = PostService.get_post_detail(post_id)
+    if post['member_id'] != session['user_id']:
+        return "<script>alert('권한이 없습니다.'); history.back();</script>"
+
+    return render_template('filesboard_edit.html', post=post, files=files)
 
 # ----------------------------------------------------------------------------------------------------------------------
 #                                                플라스크 실행
